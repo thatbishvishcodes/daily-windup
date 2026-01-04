@@ -35,6 +35,23 @@
       color:var(--text);
     }
 
+    .toast{
+      position:fixed;
+      bottom:16px;
+      left:50%;
+      transform:translateX(-50%);
+      background:rgba(34,17,47,0.92);
+      color:white;
+      padding:10px 12px;
+      border-radius:999px;
+      font-size:13px;
+      box-shadow:0 14px 30px rgba(0,0,0,0.20);
+      z-index:1000;
+      max-width:calc(100% - 32px);
+      text-align:center;
+      display:none;
+    }
+
     .app{
       max-width:820px;
       margin:0 auto;
@@ -188,37 +205,6 @@
       color:rgba(34,17,47,0.85);
     }
 
-    .toast{
-      position:fixed;
-      bottom:16px;
-      left:50%;
-      transform:translateX(-50%);
-      background:rgba(34,17,47,0.92);
-      color:white;
-      padding:10px 12px;
-      border-radius:999px;
-      font-size:13px;
-      box-shadow:0 14px 30px rgba(0,0,0,0.20);
-      z-index:1000;
-      max-width:calc(100% - 32px);
-      text-align:center;
-      display:none;
-    }
-
-    .nudge{
-      background:rgba(255,232,163,0.22);
-      border:1px solid rgba(255,232,163,0.55);
-      border-radius:var(--radius2);
-      padding:10px 12px;
-      margin:10px 0 0;
-      display:flex;
-      justify-content:space-between;
-      gap:10px;
-      align-items:flex-start;
-    }
-
-    .nudge strong{ font-weight:800; }
-
     .summary{
       border-top:1px solid rgba(120,84,160,0.12);
       margin-top:12px;
@@ -315,7 +301,19 @@
       </div>
     </div>
 
-    <div class="card" id="nudgeCard" style="display:none;"></div>
+    <!-- TODAY FOCUS -->
+    <div class="card" id="focusCard">
+      <div class="headerRow">
+        <div>
+          <div class="sectionTitle">Today’s focus</div>
+          <div class="muted" id="focusHint"></div>
+        </div>
+      </div>
+      <input id="todaysFocus" placeholder="What is the main thing today" />
+      <div class="muted" style="margin-top:8px;">
+        Pulled from yesterday if it existed. Edit if you want. Keep if you want.
+      </div>
+    </div>
 
     <!-- WIND UP -->
     <div class="card">
@@ -444,12 +442,12 @@
     </div>
 
     <div class="muted" style="padding:6px 2px;">
-      This saves on this device. If you open it on another device, it will be empty there.
+      This saves on this device.
     </div>
   </div>
 
   <script>
-    const STORAGE_KEY = "daily_windup_winddown_v2_singlefile";
+    const STORAGE_KEY = "daily_windup_winddown_v3_singlefile";
 
     const DAY_TYPES = [
       "Creative",
@@ -471,6 +469,22 @@
       const dt = new Date(y, m-1, d);
       dt.setDate(dt.getDate()+n);
       return isoDate(dt);
+    }
+
+    function monthName(i){
+      return ["January","February","March","April","May","June","July","August","September","October","November","December"][i];
+    }
+
+    function ordinal(n){
+      const s = ["th","st","nd","rd"];
+      const v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    }
+
+    function formatLong(iso){
+      const [y,m,d] = iso.split("-").map(Number);
+      const dt = new Date(y, (m||1)-1, d||1);
+      return `${ordinal(dt.getDate())} ${monthName(dt.getMonth())} ${dt.getFullYear()}`;
     }
 
     function toast(msg){
@@ -509,7 +523,8 @@
         proud: "",
         learned: "",
         tomorrowMain: "",
-        nudgeDismissed: false
+        todaysFocus: "",
+        focusSourceDate: "",
       };
     }
 
@@ -518,6 +533,15 @@
         data.days[date] = emptyDay(date);
       }
       return data.days[date];
+    }
+
+    function cryptoRandomId(){
+      if(window.crypto && crypto.getRandomValues){
+        const a = new Uint32Array(2);
+        crypto.getRandomValues(a);
+        return "t_" + a[0].toString(16) + a[1].toString(16);
+      }
+      return "t_" + Math.random().toString(16).slice(2);
     }
 
     function carryOverUnfinishedTasks(data, today, yesterday){
@@ -538,13 +562,18 @@
       }
     }
 
-    function cryptoRandomId(){
-      if(window.crypto && crypto.getRandomValues){
-        const a = new Uint32Array(2);
-        crypto.getRandomValues(a);
-        return "t_" + a[0].toString(16) + a[1].toString(16);
+    function pullFocusFromYesterday(data, today, yesterday){
+      const y = data.days[yesterday];
+      const t = data.days[today];
+      if(!y || !t) return;
+
+      const yMain = String(y.tomorrowMain || "").trim();
+      if(!yMain) return;
+
+      if(!String(t.todaysFocus || "").trim()){
+        t.todaysFocus = yMain;
+        t.focusSourceDate = yesterday;
       }
-      return "t_" + Math.random().toString(16).slice(2);
     }
 
     function currentBatchIndexes(tasks){
@@ -566,45 +595,54 @@
       return Math.max(0, left - 3);
     }
 
+    function escapeHtml(str){
+      return String(str)
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#039;");
+    }
+
+    function startFreshDay(data, today, yesterday){
+      data.days[today] = emptyDay(today);
+      ensureDay(data, yesterday);
+
+      carryOverUnfinishedTasks(data, today, yesterday);
+      pullFocusFromYesterday(data, today, yesterday);
+      return data.days[today];
+    }
+
     function render(){
       const data = loadData();
       const today = isoDate(new Date());
       const yesterday = addDays(today, -1);
 
-      ensureDay(data, today);
       ensureDay(data, yesterday);
+      ensureDay(data, today);
 
       carryOverUnfinishedTasks(data, today, yesterday);
+      pullFocusFromYesterday(data, today, yesterday);
+
       saveData(data);
 
       const day = data.days[today];
       const yDay = data.days[yesterday];
 
-      document.getElementById("todayLabel").textContent = `Today: ${today}`;
-      document.getElementById("yesterdayChip").textContent = `Yesterday: ${yesterday}`;
+      document.getElementById("todayLabel").textContent = `Today: ${formatLong(today)}`;
+      document.getElementById("yesterdayChip").textContent = `Yesterday: ${formatLong(yesterday)}`;
 
-      // Nudge card
-      const nudgeCard = document.getElementById("nudgeCard");
-      const yMain = String((yDay && yDay.tomorrowMain) || "").trim();
-      if(yMain && !day.nudgeDismissed){
-        nudgeCard.style.display = "block";
-        nudgeCard.innerHTML = `
-          <div class="nudge">
-            <div class="muted">
-              Yesterday you said today’s main thing was: <strong>${escapeHtml(yMain)}</strong>  (You can ignore this.)
-            </div>
-            <button class="btnGhost" id="dismissNudge" type="button">Dismiss</button>
-          </div>
-        `;
-        document.getElementById("dismissNudge").onclick = () => {
-          day.nudgeDismissed = true;
-          saveData(data);
-          render();
-        };
-      } else {
-        nudgeCard.style.display = "none";
-        nudgeCard.innerHTML = "";
-      }
+      // Focus
+      const focusHint = document.getElementById("focusHint");
+      const source = String(day.focusSourceDate || "").trim();
+      focusHint.textContent = source ? `Pulled from ${formatLong(source)}` : `Set it how you want`;
+
+      const todaysFocus = document.getElementById("todaysFocus");
+      todaysFocus.value = day.todaysFocus || "";
+      todaysFocus.oninput = () => {
+        day.todaysFocus = todaysFocus.value;
+        saveData(data);
+      };
 
       // Day types
       const dayTypesWrap = document.getElementById("dayTypes");
@@ -656,12 +694,6 @@
         cb.onchange = () => {
           t.done = cb.checked;
           saveData(data);
-
-          // Auto advance is natural here because render shows the next 3 unchecked
-          const nowBatch = currentBatchIndexes(day.tasks || []);
-          if(nowBatch.length === 0){
-            // Nothing left
-          }
           render();
         };
 
@@ -690,14 +722,8 @@
       energyFeel.value = day.energyFeel || "";
       flowHelp.value = day.flowHelp || "";
 
-      energyFeel.oninput = () => {
-        day.energyFeel = energyFeel.value;
-        saveData(data);
-      };
-      flowHelp.oninput = () => {
-        day.flowHelp = flowHelp.value;
-        saveData(data);
-      };
+      energyFeel.oninput = () => { day.energyFeel = energyFeel.value; saveData(data); };
+      flowHelp.oninput = () => { day.flowHelp = flowHelp.value; saveData(data); };
 
       // Wind Down fields
       const didToday = document.getElementById("didToday");
@@ -715,7 +741,6 @@
       learned.oninput = () => { day.learned = learned.value; saveData(data); };
       tomorrowMain.oninput = () => { day.tomorrowMain = tomorrowMain.value; saveData(data); };
 
-      // Submit and edit modes
       applyWindUpMode(day, data);
       applyWindDownMode(day, data);
 
@@ -724,9 +749,8 @@
         const data2 = loadData();
         const t = isoDate(new Date());
         const y = addDays(t, -1);
-        ensureDay(data2, t);
         ensureDay(data2, y);
-        carryOverUnfinishedTasks(data2, t, y);
+        startFreshDay(data2, t, y);
         saveData(data2);
         toast("New day ready ✨");
         render();
@@ -822,15 +846,6 @@
           render();
         };
       }
-    }
-
-    function escapeHtml(str){
-      return String(str)
-        .replaceAll("&","&amp;")
-        .replaceAll("<","&lt;")
-        .replaceAll(">","&gt;")
-        .replaceAll('"',"&quot;")
-        .replaceAll("'","&#039;");
     }
 
     render();
