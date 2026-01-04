@@ -177,6 +177,11 @@
       box-shadow:0 0 0 3px rgba(201,167,255,0.18);
     }
 
+    input[disabled], textarea[disabled]{
+      opacity:0.75;
+      cursor:not-allowed;
+    }
+
     .btnRow{
       display:flex;
       gap:10px;
@@ -296,22 +301,23 @@
       </div>
 
       <div class="dateRow">
-        <span class="pill" id="yesterdayChip"></span>
+        <span class="pill" id="prevWorkdayChip"></span>
         <button class="btnGhost" id="newDayBtn" type="button">New day</button>
       </div>
     </div>
 
-    <!-- TODAY FOCUS -->
-    <div class="card" id="focusCard">
+    <!-- TODAY'S FOCUS -->
+    <div class="card">
       <div class="headerRow">
         <div>
           <div class="sectionTitle">Today’s focus</div>
           <div class="muted" id="focusHint"></div>
         </div>
+        <span class="pill" id="focusStatePill">Editing</span>
       </div>
       <input id="todaysFocus" placeholder="What is the main thing today" />
       <div class="muted" style="margin-top:8px;">
-        Pulled from yesterday if it existed. Edit if you want. Keep if you want.
+        Pulled from the previous workday if it existed. Keep it or change it.
       </div>
     </div>
 
@@ -358,6 +364,11 @@
       <div id="windUpView" style="display:none;">
         <div class="summary">
           <div class="summaryBlock">
+            <div class="summaryTitle">Today’s focus</div>
+            <div class="muted" id="viewFocus"></div>
+          </div>
+
+          <div class="summaryBlock">
             <div class="summaryTitle">Day type</div>
             <div id="viewDayTypes" class="muted"></div>
           </div>
@@ -403,7 +414,7 @@
         <input id="learned" placeholder="practical, emotional, pattern based" />
 
         <div class="subTitle">Tomorrow’s main thing</div>
-        <input id="tomorrowMain" placeholder="One direction only" />
+        <input id="tomorrowMain" placeholder="This becomes tomorrow’s focus" />
 
         <div class="closeLine">Logging off. *sigh*</div>
 
@@ -442,12 +453,38 @@
     </div>
 
     <div class="muted" style="padding:6px 2px;">
-      This saves on this device.
+      Uses a 4am cutoff. Working late will not split your day at midnight.
+      Saved on this device.
     </div>
   </div>
 
   <script>
-    const STORAGE_KEY = "daily_windup_winddown_v3_singlefile";
+    // ===== Workday logic =====
+    // A "workday" is keyed by date, but the day changes at 4am (not midnight).
+    const WORKDAY_CUTOFF_HOUR = 4;
+
+    // ===== Storage schema =====
+    // data = {
+    //   days: {
+    //     "YYYY-MM-DD": {
+    //       date,
+    //       dayTypes: string[],
+    //       tasks: { id, text, done }[],
+    //       energyFeel: string,
+    //       flowHelp: string,
+    //       didToday: string,
+    //       proud: string,
+    //       learned: string,
+    //       tomorrowMain: string,
+    //       todaysFocus: string,
+    //       focusSourceDate: string,
+    //       windUpSubmitted: boolean,
+    //       windDownSubmitted: boolean
+    //     }
+    //   },
+    //   ui: { currentDate: "YYYY-MM-DD" }
+    // }
+    const STORAGE_KEY = "daily_windup_winddown_v5_singlefile";
 
     const DAY_TYPES = [
       "Creative",
@@ -468,6 +505,15 @@
       const [y,m,d] = iso.split("-").map(Number);
       const dt = new Date(y, m-1, d);
       dt.setDate(dt.getDate()+n);
+      return isoDate(dt);
+    }
+
+    function getWorkdayISO(now){
+      // If it's before cutoff hour, treat as previous day.
+      const dt = new Date(now);
+      if(dt.getHours() < WORKDAY_CUTOFF_HOUR){
+        dt.setDate(dt.getDate() - 1);
+      }
       return isoDate(dt);
     }
 
@@ -497,12 +543,13 @@
     function loadData(){
       try{
         const raw = localStorage.getItem(STORAGE_KEY);
-        if(!raw) return { days: {} };
+        if(!raw) return { days: {}, ui: { currentDate: "" } };
         const parsed = JSON.parse(raw);
-        if(!parsed || typeof parsed.days !== "object") return { days: {} };
+        if(!parsed || typeof parsed.days !== "object") return { days: {}, ui: { currentDate: "" } };
+        if(!parsed.ui) parsed.ui = { currentDate: "" };
         return parsed;
       }catch(e){
-        return { days: {} };
+        return { days: {}, ui: { currentDate: "" } };
       }
     }
 
@@ -515,16 +562,16 @@
         date,
         dayTypes: [],
         tasks: [],
-        windUpSubmitted: false,
         energyFeel: "",
         flowHelp: "",
-        windDownSubmitted: false,
         didToday: "",
         proud: "",
         learned: "",
         tomorrowMain: "",
         todaysFocus: "",
         focusSourceDate: "",
+        windUpSubmitted: false,
+        windDownSubmitted: false
       };
     }
 
@@ -544,35 +591,30 @@
       return "t_" + Math.random().toString(16).slice(2);
     }
 
-    function carryOverUnfinishedTasks(data, today, yesterday){
-      const y = data.days[yesterday];
-      const t = data.days[today];
-      if(!y || !t) return;
-
-      const unfinished = (y.tasks || []).filter(x => !x.done && String(x.text||"").trim().length);
+    function carryOverUnfinishedTasks(fromDay, toDay){
+      const unfinished = (fromDay.tasks || []).filter(x => !x.done && String(x.text||"").trim().length);
       if(!unfinished.length) return;
 
-      const existingTexts = new Set((t.tasks||[]).map(x => (x.text||"").trim()));
+      const existingTexts = new Set((toDay.tasks||[]).map(x => (x.text||"").trim()));
       const carried = unfinished
         .map(x => ({ id: cryptoRandomId(), text: x.text, done: false }))
         .filter(x => !existingTexts.has((x.text||"").trim()));
 
       if(carried.length){
-        t.tasks = carried.concat(t.tasks || []);
+        toDay.tasks = carried.concat(toDay.tasks || []);
       }
     }
 
-    function pullFocusFromYesterday(data, today, yesterday){
-      const y = data.days[yesterday];
-      const t = data.days[today];
-      if(!y || !t) return;
+    function pullFocus(fromDay, toDay, fromDate){
+      const from = String(fromDay.tomorrowMain || "").trim();
+      if(!from) return;
 
-      const yMain = String(y.tomorrowMain || "").trim();
-      if(!yMain) return;
+      const existing = String(toDay.todaysFocus || "").trim();
 
-      if(!String(t.todaysFocus || "").trim()){
-        t.todaysFocus = yMain;
-        t.focusSourceDate = yesterday;
+      // Only auto-fill if empty OR previously auto-filled from same source (meaning user didn't truly set it)
+      if(!existing || toDay.focusSourceDate === fromDate){
+        toDay.todaysFocus = from;
+        toDay.focusSourceDate = fromDate;
       }
     }
 
@@ -604,43 +646,89 @@
         .replaceAll("'","&#039;");
     }
 
-    function startFreshDay(data, today, yesterday){
-      data.days[today] = emptyDay(today);
-      ensureDay(data, yesterday);
+    function startNextWorkday(data, currentDate){
+      const nextDate = addDays(currentDate, 1);
 
-      carryOverUnfinishedTasks(data, today, yesterday);
-      pullFocusFromYesterday(data, today, yesterday);
-      return data.days[today];
+      const cur = ensureDay(data, currentDate);
+      const nxt = emptyDay(nextDate);
+
+      // Carry tasks + pull focus from current's tomorrowMain
+      carryOverUnfinishedTasks(cur, nxt);
+      pullFocus(cur, nxt, currentDate);
+
+      data.days[nextDate] = nxt;
+      data.ui.currentDate = nextDate;
+      saveData(data);
+
+      toast("New day ready ✨");
+      render();
+    }
+
+    function syncCurrentDateToWorkday(data){
+      const computed = getWorkdayISO(new Date());
+
+      // If UI date is empty, set it
+      if(!data.ui.currentDate){
+        data.ui.currentDate = computed;
+        return;
+      }
+
+      // If UI date is behind the computed workday (e.g. you reopened after cutoff), move it forward
+      // We compare as strings because ISO sorts lexicographically.
+      if(data.ui.currentDate < computed){
+        data.ui.currentDate = computed;
+      }
     }
 
     function render(){
       const data = loadData();
-      const today = isoDate(new Date());
-      const yesterday = addDays(today, -1);
+      syncCurrentDateToWorkday(data);
 
-      ensureDay(data, yesterday);
-      ensureDay(data, today);
+      const currentDate = data.ui.currentDate || getWorkdayISO(new Date());
+      const prevWorkday = addDays(currentDate, -1);
 
-      carryOverUnfinishedTasks(data, today, yesterday);
-      pullFocusFromYesterday(data, today, yesterday);
+      ensureDay(data, currentDate);
+      ensureDay(data, prevWorkday);
+
+      // Keep current day in sync with previous workday focus + tasks (only additive, never destructive)
+      const cur = data.days[currentDate];
+      const prev = data.days[prevWorkday];
+
+      carryOverUnfinishedTasks(prev, cur);
+      pullFocus(prev, cur, prevWorkday);
 
       saveData(data);
 
-      const day = data.days[today];
-      const yDay = data.days[yesterday];
+      // Header
+      document.getElementById("todayLabel").textContent = `Workday: ${formatLong(currentDate)} (day flips at 4am)`;
+      document.getElementById("prevWorkdayChip").textContent = `Previous: ${formatLong(prevWorkday)}`;
 
-      document.getElementById("todayLabel").textContent = `Today: ${formatLong(today)}`;
-      document.getElementById("yesterdayChip").textContent = `Yesterday: ${formatLong(yesterday)}`;
+      // New day button
+      document.getElementById("newDayBtn").onclick = () => {
+        const d2 = loadData();
+        syncCurrentDateToWorkday(d2);
+        const cd = d2.ui.currentDate || getWorkdayISO(new Date());
+        startNextWorkday(d2, cd);
+      };
 
-      // Focus
+      // Focus input + lock
+      const focusInput = document.getElementById("todaysFocus");
       const focusHint = document.getElementById("focusHint");
-      const source = String(day.focusSourceDate || "").trim();
+      const focusPill = document.getElementById("focusStatePill");
+
+      const source = String(cur.focusSourceDate || "").trim();
       focusHint.textContent = source ? `Pulled from ${formatLong(source)}` : `Set it how you want`;
 
-      const todaysFocus = document.getElementById("todaysFocus");
-      todaysFocus.value = day.todaysFocus || "";
-      todaysFocus.oninput = () => {
-        day.todaysFocus = todaysFocus.value;
+      focusInput.value = cur.todaysFocus || "";
+      const focusLocked = !!cur.windUpSubmitted;
+      focusInput.disabled = focusLocked;
+      focusPill.textContent = focusLocked ? "Locked" : "Editing";
+
+      focusInput.oninput = () => {
+        // only editable when not locked
+        if(cur.windUpSubmitted) return;
+        cur.todaysFocus = focusInput.value;
+        cur.focusSourceDate = ""; // user-owned now
         saveData(data);
       };
 
@@ -649,18 +737,20 @@
       dayTypesWrap.innerHTML = "";
       DAY_TYPES.forEach(opt => {
         const chip = document.createElement("div");
-        chip.className = "chip" + (day.dayTypes.includes(opt) ? " active" : "");
+        chip.className = "chip" + (cur.dayTypes.includes(opt) ? " active" : "");
         chip.textContent = opt;
         chip.onclick = () => {
-          const has = day.dayTypes.includes(opt);
+          if(cur.windUpSubmitted) return;
+
+          const has = cur.dayTypes.includes(opt);
           if(has){
-            day.dayTypes = day.dayTypes.filter(x => x !== opt);
+            cur.dayTypes = cur.dayTypes.filter(x => x !== opt);
           } else {
-            if(day.dayTypes.length >= 2){
+            if(cur.dayTypes.length >= 2){
               toast("Two is enough bestie ✨");
               return;
             }
-            day.dayTypes = day.dayTypes.concat(opt);
+            cur.dayTypes = cur.dayTypes.concat(opt);
           }
           saveData(data);
           render();
@@ -668,14 +758,15 @@
         dayTypesWrap.appendChild(chip);
       });
 
-      // Tasks
+      // Tasks rendering (always checkable, even after submit, because tasks are real life)
       const taskArea = document.getElementById("taskArea");
       taskArea.innerHTML = "";
-      const tasks = day.tasks || [];
+
+      const tasks = cur.tasks || [];
       const batchIdxs = currentBatchIndexes(tasks);
 
-      const showDoneForNow = tasks.filter(t => !t.done && String(t.text||"").trim().length).length === 0;
-      document.getElementById("doneForNow").style.display = showDoneForNow ? "block" : "none";
+      const unfinishedCount = tasks.filter(t => !t.done && String(t.text||"").trim().length).length;
+      document.getElementById("doneForNow").style.display = unfinishedCount === 0 ? "block" : "none";
       document.getElementById("queueCount").textContent = `Queue: ${remainingCountAfterBatch(tasks)} more`;
 
       batchIdxs.forEach(i => {
@@ -704,68 +795,78 @@
 
       // Add task input
       const newTask = document.getElementById("newTask");
+      newTask.disabled = false;
       newTask.onkeydown = (e) => {
         if(e.key === "Enter"){
           e.preventDefault();
           const val = String(newTask.value||"").trim();
           if(!val) return;
-          day.tasks = (day.tasks || []).concat({ id: cryptoRandomId(), text: val, done: false });
+          cur.tasks = (cur.tasks || []).concat({ id: cryptoRandomId(), text: val, done: false });
           newTask.value = "";
           saveData(data);
           render();
         }
       };
 
-      // Energy fields
+      // Energy fields (locked by windUpSubmitted; editable on Edit)
       const energyFeel = document.getElementById("energyFeel");
       const flowHelp = document.getElementById("flowHelp");
-      energyFeel.value = day.energyFeel || "";
-      flowHelp.value = day.flowHelp || "";
+      energyFeel.value = cur.energyFeel || "";
+      flowHelp.value = cur.flowHelp || "";
 
-      energyFeel.oninput = () => { day.energyFeel = energyFeel.value; saveData(data); };
-      flowHelp.oninput = () => { day.flowHelp = flowHelp.value; saveData(data); };
+      energyFeel.disabled = !!cur.windUpSubmitted;
+      flowHelp.disabled = !!cur.windUpSubmitted;
 
-      // Wind Down fields
+      energyFeel.oninput = () => {
+        if(cur.windUpSubmitted) return;
+        cur.energyFeel = energyFeel.value;
+        saveData(data);
+      };
+      flowHelp.oninput = () => {
+        if(cur.windUpSubmitted) return;
+        cur.flowHelp = flowHelp.value;
+        saveData(data);
+      };
+
+      // Wind Down fields (locked by windDownSubmitted)
       const didToday = document.getElementById("didToday");
       const proud = document.getElementById("proud");
       const learned = document.getElementById("learned");
       const tomorrowMain = document.getElementById("tomorrowMain");
 
-      didToday.value = day.didToday || "";
-      proud.value = day.proud || "";
-      learned.value = day.learned || "";
-      tomorrowMain.value = day.tomorrowMain || "";
+      didToday.value = cur.didToday || "";
+      proud.value = cur.proud || "";
+      learned.value = cur.learned || "";
+      tomorrowMain.value = cur.tomorrowMain || "";
 
-      didToday.oninput = () => { day.didToday = didToday.value; saveData(data); };
-      proud.oninput = () => { day.proud = proud.value; saveData(data); };
-      learned.oninput = () => { day.learned = learned.value; saveData(data); };
-      tomorrowMain.oninput = () => { day.tomorrowMain = tomorrowMain.value; saveData(data); };
+      const wdLocked = !!cur.windDownSubmitted;
+      didToday.disabled = wdLocked;
+      proud.disabled = wdLocked;
+      learned.disabled = wdLocked;
+      tomorrowMain.disabled = wdLocked;
 
-      applyWindUpMode(day, data);
-      applyWindDownMode(day, data);
+      didToday.oninput = () => { if(wdLocked) return; cur.didToday = didToday.value; saveData(data); };
+      proud.oninput = () => { if(wdLocked) return; cur.proud = proud.value; saveData(data); };
+      learned.oninput = () => { if(wdLocked) return; cur.learned = learned.value; saveData(data); };
+      tomorrowMain.oninput = () => { if(wdLocked) return; cur.tomorrowMain = tomorrowMain.value; saveData(data); };
 
-      // New day button
-      document.getElementById("newDayBtn").onclick = () => {
-        const data2 = loadData();
-        const t = isoDate(new Date());
-        const y = addDays(t, -1);
-        ensureDay(data2, y);
-        startFreshDay(data2, t, y);
-        saveData(data2);
-        toast("New day ready ✨");
-        render();
-      };
+      applyWindUpMode(cur, data);
+      applyWindDownMode(cur, data);
     }
 
     function applyWindUpMode(day, data){
       const edit = document.getElementById("windUpEdit");
       const view = document.getElementById("windUpView");
       const pill = document.getElementById("windUpStatePill");
+      const focusInput = document.getElementById("todaysFocus");
 
       if(day.windUpSubmitted){
         edit.style.display = "none";
         view.style.display = "block";
         pill.textContent = "Submitted";
+
+        document.getElementById("viewFocus").textContent =
+          String(day.todaysFocus||"").trim() ? day.todaysFocus : "(empty)";
 
         const types = (day.dayTypes || []).join(", ");
         document.getElementById("viewDayTypes").textContent = types ? types : "None picked";
@@ -775,7 +876,6 @@
         const listHtml = batch.length
           ? batch.map(t => `<div class="muted">• ${escapeHtml(t.text)}</div>`).join("")
           : `<div class="muted">No tasks in the current batch</div>`;
-
         document.getElementById("viewTasks").innerHTML = listHtml;
 
         const remaining = tasks.filter(t => !t.done && String(t.text||"").trim().length).length;
@@ -784,7 +884,6 @@
         document.getElementById("viewEnergy").textContent = (day.energyFeel || "").trim()
           ? `How I want to feel: ${day.energyFeel}`
           : "How I want to feel: (empty)";
-
         document.getElementById("viewFlow").textContent = (day.flowHelp || "").trim()
           ? `What will help: ${day.flowHelp}`
           : "What will help: (empty)";
@@ -794,6 +893,7 @@
           saveData(data);
           render();
         };
+
       } else {
         edit.style.display = "block";
         view.style.display = "none";
@@ -835,6 +935,7 @@
           saveData(data);
           render();
         };
+
       } else {
         edit.style.display = "block";
         view.style.display = "none";
