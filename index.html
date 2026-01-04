@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Daily Wind Up + Wind Down</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=League+Spartan:wght@600;700&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --lilac: #c9a7ff;
+      --pink: #ff4fd8;
+      --yellow: #ffe8a3;
+      --bg: #fbf7ff;
+      --text: #22112f;
+      --muted: rgba(34,17,47,0.6);
+      --card: rgba(255,255,255,0.9);
+      --radius: 18px;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(201,167,255,0.35), transparent 50%),
+        radial-gradient(circle at bottom right, rgba(255,79,216,0.15), transparent 50%),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .app {
+      max-width: 720px;
+      margin: auto;
+      padding: 16px;
+    }
+
+    h1 {
+      font-family: "League Spartan", sans-serif;
+      font-size: 22px;
+      margin-bottom: 12px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .title {
+      font-family: "League Spartan", sans-serif;
+      font-size: 18px;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .chip {
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--lilac);
+      background: rgba(201,167,255,0.15);
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .chip.active {
+      background: rgba(255,79,216,0.2);
+      border-color: var(--pink);
+    }
+
+    input, textarea {
+      width: 100%;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px solid #ddd;
+      margin-top: 6px;
+      font-family: inherit;
+    }
+
+    .task {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: rgba(255,79,216,0.15);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .footer {
+      margin-top: 12px;
+      font-weight: 600;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+
+    <div class="card">
+      <h1>🌅 Wind Up</h1>
+      <div class="muted">Daily check in · 2–5 min</div>
+      <p>Alright. What are we working with today?</p>
+
+      <div class="title">Pick the day type</div>
+      <div class="muted">Pick up to two. One is totally fine.</div>
+
+      <div class="chips" id="dayTypes"></div>
+
+      <div style="margin-top:16px" class="title">The Big 3</div>
+      <div class="muted">Three tasks at a time. No overwhelm.</div>
+
+      <div id="tasks"></div>
+      <input id="newTask" placeholder="Add task" />
+
+      <div style="margin-top:16px" class="title">Energy + Flow</div>
+      <input placeholder="How I want to feel while working" />
+      <input placeholder="What will help today" />
+
+      <div class="footer">Alright bestie, let’s go ✨💅</div>
+    </div>
+
+    <div class="card">
+      <h1>🌙 Wind Down</h1>
+      <div class="muted">End of day close out · 1–3 min</div>
+
+      <div class="title">Stuff I did today</div>
+      <textarea placeholder="Anything counts. No explaining."></textarea>
+
+      <div class="title" style="margin-top:12px">One thing I’m proud of</div>
+      <input />
+
+      <div class="title" style="margin-top:12px">One thing I learned (optional)</div>
+      <input />
+
+      <div class="title" style="margin-top:12px">Tomorrow’s main thing</div>
+      <input />
+
+      <div class="footer">Logging off. *sigh*</div>
+    </div>
+
+  </div>
+
+  <script>
+    const options = [
+      "Creative",
+      "Research",
+      "Structure + Organising",
+      "Admin + Life Stuff",
+      "Bare Minimum"
+    ];
+
+    const container = document.getElementById("dayTypes");
+    let selected = [];
+
+    options.forEach(opt => {
+      const btn = document.createElement("div");
+      btn.className = "chip";
+      btn.innerText = opt;
+      btn.onclick = () => {
+        if (selected.includes(opt)) {
+          selected = selected.filter(o => o !== opt);
+          btn.classList.remove("active");
+        } else {
+          if (selected.length >= 2) {
+            alert("Two is enough bestie ✨");
+            return;
+          }
+          selected.push(opt);
+          btn.classList.add("active");
+        }
+      };
+      container.appendChild(btn);
+    });
+
+    const tasksDiv = document.getElementById("tasks");
+    const newTask = document.getElementById("newTask");
+    let tasks = [];
+
+    function renderTasks() {
+      tasksDiv.innerHTML = "";
+      tasks.slice(0,3).forEach((t,i) => {
+        const row = document.createElement("div");
+        row.className = "task";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.onchange = () => {
+          tasks.splice(i,1);
+          renderTasks();
+        };
+        row.appendChild(cb);
+        row.appendChild(document.createTextNode(t));
+        tasksDiv.appendChild(row);
+      });
+    }
+
+    newTask.addEventListener("keydown", e => {
+      if (e.key === "Enter" && newTask.value) {
+        tasks.push(newTask.value);
+        newTask.value = "";
+        renderTasks();
+      }
+    });
+  </script>
+</body>
+</html>
