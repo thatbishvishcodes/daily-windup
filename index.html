@@ -301,7 +301,7 @@
       </div>
 
       <div class="dateRow">
-        <span class="pill" id="prevWorkdayChip"></span>
+        <span class="pill" id="lastEntryChip"></span>
         <button class="btnGhost" id="newDayBtn" type="button">New day</button>
       </div>
     </div>
@@ -317,7 +317,7 @@
       </div>
       <input id="todaysFocus" placeholder="What is the main thing today" />
       <div class="muted" style="margin-top:8px;">
-        Pulled from the previous workday if it existed. Keep it or change it.
+        Pulled from your most recent previous entry if it existed. Keep it or change it.
       </div>
     </div>
 
@@ -453,38 +453,15 @@
     </div>
 
     <div class="muted" style="padding:6px 2px;">
-      Uses a 4am cutoff. Working late will not split your day at midnight.
+      Uses a 4am cutoff so late-night work stays in the same day.
+      New day resets the current workday, it never jumps dates.
       Saved on this device.
     </div>
   </div>
 
   <script>
-    // ===== Workday logic =====
-    // A "workday" is keyed by date, but the day changes at 4am (not midnight).
     const WORKDAY_CUTOFF_HOUR = 4;
-
-    // ===== Storage schema =====
-    // data = {
-    //   days: {
-    //     "YYYY-MM-DD": {
-    //       date,
-    //       dayTypes: string[],
-    //       tasks: { id, text, done }[],
-    //       energyFeel: string,
-    //       flowHelp: string,
-    //       didToday: string,
-    //       proud: string,
-    //       learned: string,
-    //       tomorrowMain: string,
-    //       todaysFocus: string,
-    //       focusSourceDate: string,
-    //       windUpSubmitted: boolean,
-    //       windDownSubmitted: boolean
-    //     }
-    //   },
-    //   ui: { currentDate: "YYYY-MM-DD" }
-    // }
-    const STORAGE_KEY = "daily_windup_winddown_v5_singlefile";
+    const STORAGE_KEY = "daily_windup_winddown_v6_singlefile";
 
     const DAY_TYPES = [
       "Creative",
@@ -509,7 +486,6 @@
     }
 
     function getWorkdayISO(now){
-      // If it's before cutoff hour, treat as previous day.
       const dt = new Date(now);
       if(dt.getHours() < WORKDAY_CUTOFF_HOUR){
         dt.setDate(dt.getDate() - 1);
@@ -543,13 +519,12 @@
     function loadData(){
       try{
         const raw = localStorage.getItem(STORAGE_KEY);
-        if(!raw) return { days: {}, ui: { currentDate: "" } };
+        if(!raw) return { days: {} };
         const parsed = JSON.parse(raw);
-        if(!parsed || typeof parsed.days !== "object") return { days: {}, ui: { currentDate: "" } };
-        if(!parsed.ui) parsed.ui = { currentDate: "" };
+        if(!parsed || typeof parsed.days !== "object") return { days: {} };
         return parsed;
       }catch(e){
-        return { days: {}, ui: { currentDate: "" } };
+        return { days: {} };
       }
     }
 
@@ -611,7 +586,6 @@
 
       const existing = String(toDay.todaysFocus || "").trim();
 
-      // Only auto-fill if empty OR previously auto-filled from same source (meaning user didn't truly set it)
       if(!existing || toDay.focusSourceDate === fromDate){
         toDay.todaysFocus = from;
         toDay.focusSourceDate = fromDate;
@@ -646,72 +620,53 @@
         .replaceAll("'","&#039;");
     }
 
-    function startNextWorkday(data, currentDate){
-      const nextDate = addDays(currentDate, 1);
-
-      const cur = ensureDay(data, currentDate);
-      const nxt = emptyDay(nextDate);
-
-      // Carry tasks + pull focus from current's tomorrowMain
-      carryOverUnfinishedTasks(cur, nxt);
-      pullFocus(cur, nxt, currentDate);
-
-      data.days[nextDate] = nxt;
-      data.ui.currentDate = nextDate;
-      saveData(data);
-
-      toast("New day ready ✨");
-      render();
+    function getLastEntryDate(data, beforeDate){
+      const keys = Object.keys(data.days || {}).filter(k => k < beforeDate).sort();
+      return keys.length ? keys[keys.length - 1] : "";
     }
 
-    function syncCurrentDateToWorkday(data){
-      const computed = getWorkdayISO(new Date());
+    function resetCurrentWorkday(data, currentDate){
+      const lastDate = getLastEntryDate(data, currentDate);
+      const fresh = emptyDay(currentDate);
 
-      // If UI date is empty, set it
-      if(!data.ui.currentDate){
-        data.ui.currentDate = computed;
-        return;
+      if(lastDate){
+        const last = data.days[lastDate];
+        carryOverUnfinishedTasks(last, fresh);
+        pullFocus(last, fresh, lastDate);
       }
 
-      // If UI date is behind the computed workday (e.g. you reopened after cutoff), move it forward
-      // We compare as strings because ISO sorts lexicographically.
-      if(data.ui.currentDate < computed){
-        data.ui.currentDate = computed;
-      }
+      data.days[currentDate] = fresh;
+      saveData(data);
     }
 
     function render(){
       const data = loadData();
-      syncCurrentDateToWorkday(data);
-
-      const currentDate = data.ui.currentDate || getWorkdayISO(new Date());
-      const prevWorkday = addDays(currentDate, -1);
-
+      const currentDate = getWorkdayISO(new Date());
       ensureDay(data, currentDate);
-      ensureDay(data, prevWorkday);
 
-      // Keep current day in sync with previous workday focus + tasks (only additive, never destructive)
+      const lastDate = getLastEntryDate(data, currentDate);
       const cur = data.days[currentDate];
-      const prev = data.days[prevWorkday];
+      const last = lastDate ? data.days[lastDate] : null;
 
-      carryOverUnfinishedTasks(prev, cur);
-      pullFocus(prev, cur, prevWorkday);
+      // On open: softly pull from most recent prior entry (additive only)
+      if(last){
+        carryOverUnfinishedTasks(last, cur);
+        pullFocus(last, cur, lastDate);
+        saveData(data);
+      }
 
-      saveData(data);
-
-      // Header
       document.getElementById("todayLabel").textContent = `Workday: ${formatLong(currentDate)} (day flips at 4am)`;
-      document.getElementById("prevWorkdayChip").textContent = `Previous: ${formatLong(prevWorkday)}`;
+      document.getElementById("lastEntryChip").textContent = lastDate ? `Last entry: ${formatLong(lastDate)}` : `Last entry: none`;
 
-      // New day button
       document.getElementById("newDayBtn").onclick = () => {
-        const d2 = loadData();
-        syncCurrentDateToWorkday(d2);
-        const cd = d2.ui.currentDate || getWorkdayISO(new Date());
-        startNextWorkday(d2, cd);
+        const data2 = loadData();
+        const cd = getWorkdayISO(new Date());
+        resetCurrentWorkday(data2, cd);
+        toast("Fresh start for today ✨");
+        render();
       };
 
-      // Focus input + lock
+      // Focus lock logic
       const focusInput = document.getElementById("todaysFocus");
       const focusHint = document.getElementById("focusHint");
       const focusPill = document.getElementById("focusStatePill");
@@ -725,14 +680,13 @@
       focusPill.textContent = focusLocked ? "Locked" : "Editing";
 
       focusInput.oninput = () => {
-        // only editable when not locked
         if(cur.windUpSubmitted) return;
         cur.todaysFocus = focusInput.value;
-        cur.focusSourceDate = ""; // user-owned now
+        cur.focusSourceDate = "";
         saveData(data);
       };
 
-      // Day types
+      // Day types (locked when Wind Up submitted)
       const dayTypesWrap = document.getElementById("dayTypes");
       dayTypesWrap.innerHTML = "";
       DAY_TYPES.forEach(opt => {
@@ -758,7 +712,7 @@
         dayTypesWrap.appendChild(chip);
       });
 
-      // Tasks rendering (always checkable, even after submit, because tasks are real life)
+      // Tasks: always checkable
       const taskArea = document.getElementById("taskArea");
       taskArea.innerHTML = "";
 
@@ -793,9 +747,7 @@
         taskArea.appendChild(row);
       });
 
-      // Add task input
       const newTask = document.getElementById("newTask");
-      newTask.disabled = false;
       newTask.onkeydown = (e) => {
         if(e.key === "Enter"){
           e.preventDefault();
@@ -808,7 +760,7 @@
         }
       };
 
-      // Energy fields (locked by windUpSubmitted; editable on Edit)
+      // Energy fields (locked by Wind Up submission)
       const energyFeel = document.getElementById("energyFeel");
       const flowHelp = document.getElementById("flowHelp");
       energyFeel.value = cur.energyFeel || "";
@@ -817,18 +769,10 @@
       energyFeel.disabled = !!cur.windUpSubmitted;
       flowHelp.disabled = !!cur.windUpSubmitted;
 
-      energyFeel.oninput = () => {
-        if(cur.windUpSubmitted) return;
-        cur.energyFeel = energyFeel.value;
-        saveData(data);
-      };
-      flowHelp.oninput = () => {
-        if(cur.windUpSubmitted) return;
-        cur.flowHelp = flowHelp.value;
-        saveData(data);
-      };
+      energyFeel.oninput = () => { if(cur.windUpSubmitted) return; cur.energyFeel = energyFeel.value; saveData(data); };
+      flowHelp.oninput = () => { if(cur.windUpSubmitted) return; cur.flowHelp = flowHelp.value; saveData(data); };
 
-      // Wind Down fields (locked by windDownSubmitted)
+      // Wind Down fields (locked by Wind Down submission)
       const didToday = document.getElementById("didToday");
       const proud = document.getElementById("proud");
       const learned = document.getElementById("learned");
@@ -858,7 +802,6 @@
       const edit = document.getElementById("windUpEdit");
       const view = document.getElementById("windUpView");
       const pill = document.getElementById("windUpStatePill");
-      const focusInput = document.getElementById("todaysFocus");
 
       if(day.windUpSubmitted){
         edit.style.display = "none";
