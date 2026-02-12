@@ -339,16 +339,17 @@
         <div class="chips" id="dayTypes"></div>
 
         <div class="subTitle">The Big 3</div>
-        <div class="muted">Three tasks at a time. No overwhelm.</div>
+        <div class="muted">Pick three tasks for now. Momentum first.</div>
 
         <div class="taskArea" id="taskArea"></div>
 
-        <div class="queueLine">
-          <div id="queueCount">Queue: 0</div>
-          <div id="doneForNow" style="display:none;">Done for now 🫶</div>
+        <div class="queueLine" id="queueLine">
+          <div id="queueCount">Pool: 0</div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <div id="doneForNow" style="display:none;">Done for now 🫶</div>
+            <button class="btnGhost" id="refreshBtn" type="button">Refresh</button>
+          </div>
         </div>
-
-        <input id="newTask" placeholder="Add task" />
 
         <div class="subTitle">Energy + Flow</div>
         <input id="energyFeel" placeholder="How I want to feel while working" />
@@ -453,15 +454,20 @@
     </div>
 
     <div class="muted" style="padding:6px 2px;">
-      Uses a 4am cutoff so late-night work stays in the same day.
+      Uses a 4am cutoff so late night work stays in the same day.
       New day resets the current workday, it never jumps dates.
-      Saved on this device.
+      Ritual inputs saved on this device.
+      Tasks are pulled live from Notion through your Worker.
     </div>
   </div>
 
   <script>
     const WORKDAY_CUTOFF_HOUR = 4;
-    const STORAGE_KEY = "daily_windup_winddown_v6_singlefile";
+    const STORAGE_KEY = "daily_windup_winddown_v7_ritual_only";
+    const BIG3_PREFIX = "house_widget_big3_";
+
+    // IMPORTANT: your Worker base URL
+    const API_BASE = "https://steep-flower-44a3.vkhakhar99.workers.dev";
 
     const DAY_TYPES = [
       "Creative",
@@ -476,13 +482,6 @@
       const m = String(d.getMonth()+1).padStart(2,"0");
       const day = String(d.getDate()).padStart(2,"0");
       return `${y}-${m}-${day}`;
-    }
-
-    function addDays(iso, n){
-      const [y,m,d] = iso.split("-").map(Number);
-      const dt = new Date(y, m-1, d);
-      dt.setDate(dt.getDate()+n);
-      return isoDate(dt);
     }
 
     function getWorkdayISO(now){
@@ -516,7 +515,7 @@
       setTimeout(()=>{ el.style.display = "none"; }, 1600);
     }
 
-    function loadData(){
+    function loadRitualData(){
       try{
         const raw = localStorage.getItem(STORAGE_KEY);
         if(!raw) return { days: {} };
@@ -528,7 +527,7 @@
       }
     }
 
-    function saveData(data){
+    function saveRitualData(data){
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     }
 
@@ -536,7 +535,6 @@
       return {
         date,
         dayTypes: [],
-        tasks: [],
         energyFeel: "",
         flowHelp: "",
         didToday: "",
@@ -557,27 +555,9 @@
       return data.days[date];
     }
 
-    function cryptoRandomId(){
-      if(window.crypto && crypto.getRandomValues){
-        const a = new Uint32Array(2);
-        crypto.getRandomValues(a);
-        return "t_" + a[0].toString(16) + a[1].toString(16);
-      }
-      return "t_" + Math.random().toString(16).slice(2);
-    }
-
-    function carryOverUnfinishedTasks(fromDay, toDay){
-      const unfinished = (fromDay.tasks || []).filter(x => !x.done && String(x.text||"").trim().length);
-      if(!unfinished.length) return;
-
-      const existingTexts = new Set((toDay.tasks||[]).map(x => (x.text||"").trim()));
-      const carried = unfinished
-        .map(x => ({ id: cryptoRandomId(), text: x.text, done: false }))
-        .filter(x => !existingTexts.has((x.text||"").trim()));
-
-      if(carried.length){
-        toDay.tasks = carried.concat(toDay.tasks || []);
-      }
+    function getLastEntryDate(data, beforeDate){
+      const keys = Object.keys(data.days || {}).filter(k => k < beforeDate).sort();
+      return keys.length ? keys[keys.length - 1] : "";
     }
 
     function pullFocus(fromDay, toDay, fromDate){
@@ -592,23 +572,53 @@
       }
     }
 
-    function currentBatchIndexes(tasks){
-      const idxs = [];
-      for(let i=0;i<tasks.length;i++){
-        if(!tasks[i].done && String(tasks[i].text||"").trim().length){
-          idxs.push(i);
-          if(idxs.length === 3) break;
-        }
+    function resetCurrentWorkday(data, currentDate){
+      const lastDate = getLastEntryDate(data, currentDate);
+      const fresh = emptyDay(currentDate);
+
+      if(lastDate){
+        const last = data.days[lastDate];
+        pullFocus(last, fresh, lastDate);
       }
-      return idxs;
+
+      data.days[currentDate] = fresh;
+      saveRitualData(data);
     }
 
-    function remainingCountAfterBatch(tasks){
-      let left = 0;
-      for(const t of tasks){
-        if(!t.done && String(t.text||"").trim().length) left++;
+    function big3Key(workday){
+      return `${BIG3_PREFIX}${workday}`;
+    }
+
+    function loadBig3(workday){
+      try{
+        const raw = localStorage.getItem(big3Key(workday));
+        const arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr : [];
+      }catch(e){
+        return [];
       }
-      return Math.max(0, left - 3);
+    }
+
+    function saveBig3(workday, ids){
+      localStorage.setItem(big3Key(workday), JSON.stringify(ids));
+    }
+
+    async function apiToday(workday){
+      const res = await fetch(`${API_BASE}/today?date=${workday}`);
+      const data = await res.json();
+      if(!res.ok) throw new Error(JSON.stringify(data));
+      return data;
+    }
+
+    async function apiMarkDone(pageId){
+      const res = await fetch(`${API_BASE}/mark-done`, {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ id: pageId })
+      });
+      const data = await res.json();
+      if(!res.ok) throw new Error(JSON.stringify(data));
+      return data;
     }
 
     function escapeHtml(str){
@@ -620,27 +630,8 @@
         .replaceAll("'","&#039;");
     }
 
-    function getLastEntryDate(data, beforeDate){
-      const keys = Object.keys(data.days || {}).filter(k => k < beforeDate).sort();
-      return keys.length ? keys[keys.length - 1] : "";
-    }
-
-    function resetCurrentWorkday(data, currentDate){
-      const lastDate = getLastEntryDate(data, currentDate);
-      const fresh = emptyDay(currentDate);
-
-      if(lastDate){
-        const last = data.days[lastDate];
-        carryOverUnfinishedTasks(last, fresh);
-        pullFocus(last, fresh, lastDate);
-      }
-
-      data.days[currentDate] = fresh;
-      saveData(data);
-    }
-
-    function render(){
-      const data = loadData();
+    async function render(){
+      const data = loadRitualData();
       const currentDate = getWorkdayISO(new Date());
       ensureDay(data, currentDate);
 
@@ -648,18 +639,16 @@
       const cur = data.days[currentDate];
       const last = lastDate ? data.days[lastDate] : null;
 
-      // On open: softly pull from most recent prior entry (additive only)
       if(last){
-        carryOverUnfinishedTasks(last, cur);
         pullFocus(last, cur, lastDate);
-        saveData(data);
+        saveRitualData(data);
       }
 
       document.getElementById("todayLabel").textContent = `Workday: ${formatLong(currentDate)} (day flips at 4am)`;
       document.getElementById("lastEntryChip").textContent = lastDate ? `Last entry: ${formatLong(lastDate)}` : `Last entry: none`;
 
       document.getElementById("newDayBtn").onclick = () => {
-        const data2 = loadData();
+        const data2 = loadRitualData();
         const cd = getWorkdayISO(new Date());
         resetCurrentWorkday(data2, cd);
         toast("Fresh start for today ✨");
@@ -683,10 +672,10 @@
         if(cur.windUpSubmitted) return;
         cur.todaysFocus = focusInput.value;
         cur.focusSourceDate = "";
-        saveData(data);
+        saveRitualData(data);
       };
 
-      // Day types (locked when Wind Up submitted)
+      // Day types
       const dayTypesWrap = document.getElementById("dayTypes");
       dayTypesWrap.innerHTML = "";
       DAY_TYPES.forEach(opt => {
@@ -706,61 +695,136 @@
             }
             cur.dayTypes = cur.dayTypes.concat(opt);
           }
-          saveData(data);
+          saveRitualData(data);
           render();
         };
         dayTypesWrap.appendChild(chip);
       });
 
-      // Tasks: always checkable
+      // Tasks from Notion
+      const refreshBtn = document.getElementById("refreshBtn");
+      refreshBtn.onclick = async () => {
+        toast("Refreshing ✨");
+        await render();
+      };
+
       const taskArea = document.getElementById("taskArea");
       taskArea.innerHTML = "";
 
-      const tasks = cur.tasks || [];
-      const batchIdxs = currentBatchIndexes(tasks);
+      let apiData;
+      try{
+        apiData = await apiToday(currentDate);
+      }catch(e){
+        taskArea.innerHTML = `<div class="muted">Could not load tasks. Check Worker.</div>`;
+        console.log(e);
+        return;
+      }
 
-      const unfinishedCount = tasks.filter(t => !t.done && String(t.text||"").trim().length).length;
-      document.getElementById("doneForNow").style.display = unfinishedCount === 0 ? "block" : "none";
-      document.getElementById("queueCount").textContent = `Queue: ${remainingCountAfterBatch(tasks)} more`;
+      const todayTasks = apiData.todayTasks || [];
+      const backlogTasks = apiData.backlogTasks || [];
 
-      batchIdxs.forEach(i => {
-        const t = tasks[i];
-        const row = document.createElement("div");
-        row.className = "taskRow";
+      let big3Ids = loadBig3(currentDate);
 
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = !!t.done;
+      const pool = [...todayTasks, ...backlogTasks];
+      const poolIds = new Set(pool.map(t => t.id));
+      big3Ids = big3Ids.filter(id => poolIds.has(id));
+      saveBig3(currentDate, big3Ids);
 
-        const text = document.createElement("div");
-        text.className = "taskText" + (t.done ? " done" : "");
-        text.textContent = t.text;
+      const poolCount = pool.length;
+      document.getElementById("queueCount").textContent = `Pool: ${poolCount}`;
+      document.getElementById("doneForNow").style.display = poolCount === 0 ? "block" : "none";
 
-        cb.onchange = () => {
-          t.done = cb.checked;
-          saveData(data);
-          render();
-        };
+      function taskLabel(t){
+        const hasDue = !!t.dueStart;
+        if(!hasDue) return t.name;
+        if(t.dueEnd && t.dueEnd !== t.dueStart) return `${t.name} (${t.dueStart} to ${t.dueEnd})`;
+        return `${t.name} (${t.dueStart})`;
+      }
 
-        row.appendChild(cb);
-        row.appendChild(text);
-        taskArea.appendChild(row);
-      });
+      function renderDivider(text){
+        const div = document.createElement("div");
+        div.className = "muted";
+        div.style.marginTop = "10px";
+        div.style.fontWeight = "800";
+        div.textContent = text;
+        taskArea.appendChild(div);
+      }
 
-      const newTask = document.getElementById("newTask");
-      newTask.onkeydown = (e) => {
-        if(e.key === "Enter"){
-          e.preventDefault();
-          const val = String(newTask.value||"").trim();
-          if(!val) return;
-          cur.tasks = (cur.tasks || []).concat({ id: cryptoRandomId(), text: val, done: false });
-          newTask.value = "";
-          saveData(data);
-          render();
+      function renderList(items){
+        if(!items.length){
+          const none = document.createElement("div");
+          none.className = "muted";
+          none.textContent = "Nothing here.";
+          taskArea.appendChild(none);
+          return;
         }
-      };
 
-      // Energy fields (locked by Wind Up submission)
+        items.forEach(t => {
+          const row = document.createElement("div");
+          row.className = "taskRow";
+
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = false;
+
+          const text = document.createElement("div");
+          text.className = "taskText";
+          text.textContent = taskLabel(t);
+
+          const pick = document.createElement("button");
+          pick.type = "button";
+          pick.className = "btnGhost";
+          pick.style.padding = "8px 10px";
+          pick.textContent = big3Ids.includes(t.id) ? "Picked" : "Pick";
+
+          pick.onclick = () => {
+            if(cur.windUpSubmitted) return;
+
+            if(big3Ids.includes(t.id)){
+              big3Ids = big3Ids.filter(x => x !== t.id);
+            } else {
+              if(big3Ids.length >= 3){
+                toast("Big 3 max. Finish one first ✨");
+                return;
+              }
+              big3Ids = big3Ids.concat(t.id);
+            }
+            saveBig3(currentDate, big3Ids);
+            render();
+          };
+
+          cb.onchange = async () => {
+            try{
+              cb.disabled = true;
+              await apiMarkDone(t.id);
+
+              big3Ids = big3Ids.filter(x => x !== t.id);
+              saveBig3(currentDate, big3Ids);
+
+              toast("Marked Done ✅");
+              await render();
+            }catch(e){
+              console.log(e);
+              toast("Could not mark done");
+              cb.checked = false;
+              cb.disabled = false;
+            }
+          };
+
+          row.appendChild(cb);
+          row.appendChild(text);
+          row.appendChild(pick);
+          taskArea.appendChild(row);
+        });
+      }
+
+      renderDivider("Scheduled for today");
+      renderList(todayTasks);
+
+      renderDivider("Unscheduled backlog");
+      renderList(backlogTasks);
+
+      // Energy fields
       const energyFeel = document.getElementById("energyFeel");
       const flowHelp = document.getElementById("flowHelp");
       energyFeel.value = cur.energyFeel || "";
@@ -769,10 +833,10 @@
       energyFeel.disabled = !!cur.windUpSubmitted;
       flowHelp.disabled = !!cur.windUpSubmitted;
 
-      energyFeel.oninput = () => { if(cur.windUpSubmitted) return; cur.energyFeel = energyFeel.value; saveData(data); };
-      flowHelp.oninput = () => { if(cur.windUpSubmitted) return; cur.flowHelp = flowHelp.value; saveData(data); };
+      energyFeel.oninput = () => { if(cur.windUpSubmitted) return; cur.energyFeel = energyFeel.value; saveRitualData(data); };
+      flowHelp.oninput = () => { if(cur.windUpSubmitted) return; cur.flowHelp = flowHelp.value; saveRitualData(data); };
 
-      // Wind Down fields (locked by Wind Down submission)
+      // Wind Down fields
       const didToday = document.getElementById("didToday");
       const proud = document.getElementById("proud");
       const learned = document.getElementById("learned");
@@ -789,19 +853,23 @@
       learned.disabled = wdLocked;
       tomorrowMain.disabled = wdLocked;
 
-      didToday.oninput = () => { if(wdLocked) return; cur.didToday = didToday.value; saveData(data); };
-      proud.oninput = () => { if(wdLocked) return; cur.proud = proud.value; saveData(data); };
-      learned.oninput = () => { if(wdLocked) return; cur.learned = learned.value; saveData(data); };
-      tomorrowMain.oninput = () => { if(wdLocked) return; cur.tomorrowMain = tomorrowMain.value; saveData(data); };
+      didToday.oninput = () => { if(wdLocked) return; cur.didToday = didToday.value; saveRitualData(data); };
+      proud.oninput = () => { if(wdLocked) return; cur.proud = proud.value; saveRitualData(data); };
+      learned.oninput = () => { if(wdLocked) return; cur.learned = learned.value; saveRitualData(data); };
+      tomorrowMain.oninput = () => { if(wdLocked) return; cur.tomorrowMain = tomorrowMain.value; saveRitualData(data); };
 
-      applyWindUpMode(cur, data);
+      applyWindUpMode(cur, data, currentDate, todayTasks, backlogTasks);
       applyWindDownMode(cur, data);
     }
 
-    function applyWindUpMode(day, data){
+    function applyWindUpMode(day, data, workday, todayTasks, backlogTasks){
       const edit = document.getElementById("windUpEdit");
       const view = document.getElementById("windUpView");
       const pill = document.getElementById("windUpStatePill");
+
+      const big3Ids = loadBig3(workday);
+      const pool = [...(todayTasks||[]), ...(backlogTasks||[])];
+      const byId = new Map(pool.map(t => [t.id, t]));
 
       if(day.windUpSubmitted){
         edit.style.display = "none";
@@ -814,15 +882,14 @@
         const types = (day.dayTypes || []).join(", ");
         document.getElementById("viewDayTypes").textContent = types ? types : "None picked";
 
-        const tasks = day.tasks || [];
-        const batch = currentBatchIndexes(tasks).map(i => tasks[i]);
-        const listHtml = batch.length
-          ? batch.map(t => `<div class="muted">• ${escapeHtml(t.text)}</div>`).join("")
-          : `<div class="muted">No tasks in the current batch</div>`;
+        const selected = big3Ids.map(id => byId.get(id)).filter(Boolean);
+        const listHtml = selected.length
+          ? selected.map(t => `<div class="muted">• ${escapeHtml(t.name)}</div>`).join("")
+          : `<div class="muted">No Big 3 picked yet</div>`;
         document.getElementById("viewTasks").innerHTML = listHtml;
 
-        const remaining = tasks.filter(t => !t.done && String(t.text||"").trim().length).length;
-        document.getElementById("viewQueue").textContent = remaining ? `Unfinished in queue: ${remaining}` : "All tasks done 🫶";
+        const remaining = pool.length;
+        document.getElementById("viewQueue").textContent = remaining ? `Pool remaining: ${remaining}` : "All done 🫶";
 
         document.getElementById("viewEnergy").textContent = (day.energyFeel || "").trim()
           ? `How I want to feel: ${day.energyFeel}`
@@ -833,7 +900,7 @@
 
         document.getElementById("editWindUp").onclick = () => {
           day.windUpSubmitted = false;
-          saveData(data);
+          saveRitualData(data);
           render();
         };
 
@@ -844,7 +911,7 @@
 
         document.getElementById("submitWindUp").onclick = () => {
           day.windUpSubmitted = true;
-          saveData(data);
+          saveRitualData(data);
           render();
         };
       }
@@ -875,7 +942,7 @@
 
         document.getElementById("editWindDown").onclick = () => {
           day.windDownSubmitted = false;
-          saveData(data);
+          saveRitualData(data);
           render();
         };
 
@@ -886,7 +953,7 @@
 
         document.getElementById("submitWindDown").onclick = () => {
           day.windDownSubmitted = true;
-          saveData(data);
+          saveRitualData(data);
           render();
         };
       }
